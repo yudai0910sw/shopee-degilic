@@ -24,7 +24,13 @@ const CONFIG = {
       GET_ORDER_LIST: '/order/get_order_list',
       GET_ORDER_DETAIL: '/order/get_order_detail',
       GET_SHIPPING_PARAMETER: '/logistics/get_shipping_parameter',
-      GET_ESCROW_DETAIL: '/payment/get_escrow_detail'
+      GET_ESCROW_DETAIL: '/payment/get_escrow_detail',
+      // 配送ラベル関連
+      GET_TRACKING_NUMBER: '/logistics/get_tracking_number',
+      GET_SHIPPING_DOCUMENT_PARAMETER: '/logistics/get_shipping_document_parameter',
+      CREATE_SHIPPING_DOCUMENT: '/logistics/create_shipping_document',
+      GET_SHIPPING_DOCUMENT_RESULT: '/logistics/get_shipping_document_result',
+      DOWNLOAD_SHIPPING_DOCUMENT: '/logistics/download_shipping_document'
     }
   },
 

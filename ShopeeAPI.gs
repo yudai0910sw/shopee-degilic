@@ -304,6 +304,357 @@ class ShopeeAPI {
 
     return orderDetails;
   }
+
+  /**
+   * POSTリクエストを送信
+   * @param {string} endpoint - エンドポイント
+   * @param {Object} payload - リクエストボディ
+   * @return {Object} レスポンス
+   */
+  postRequest(endpoint, payload = {}) {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const path = `/api/v2${endpoint}`;
+    const sign = this.generateSign(path, timestamp);
+
+    // URLパラメータ
+    const queryParams = {
+      partner_id: this.partnerId,
+      timestamp: timestamp,
+      access_token: this.accessToken,
+      shop_id: this.shopId,
+      sign: sign
+    };
+
+    const queryString = Object.keys(queryParams)
+      .map(key => `${key}=${encodeURIComponent(queryParams[key])}`)
+      .join('&');
+
+    const url = `${this.baseUrl}${endpoint}?${queryString}`;
+
+    Logger.log(`POSTリクエストURL: ${url}`);
+    Logger.log(`ペイロード: ${JSON.stringify(payload)}`);
+
+    try {
+      const response = UrlFetchApp.fetch(url, {
+        method: 'post',
+        contentType: 'application/json',
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true
+      });
+
+      const responseCode = response.getResponseCode();
+      const contentType = response.getHeaders()['Content-Type'] || '';
+
+      Logger.log(`レスポンスコード: ${responseCode}`);
+
+      // PDFの場合はBlobを返す
+      if (contentType.includes('application/pdf')) {
+        Logger.log('PDFレスポンスを受信しました');
+        const blob = response.getBlob();
+        blob.setContentType('application/pdf');
+        return blob;
+      }
+
+      const responseBody = response.getContentText();
+      Logger.log(`レスポンスボディ: ${responseBody}`);
+
+      if (responseCode !== 200) {
+        throw new Error(`APIエラー: ${responseCode} - ${responseBody}`);
+      }
+
+      const data = JSON.parse(responseBody);
+
+      if (data.error) {
+        // batch API失敗の場合、result_listから詳細を取得
+        if (data.error === 'common.batch_api_all_failed' &&
+            data.response && data.response.result_list && data.response.result_list.length > 0) {
+          const result = data.response.result_list[0];
+          if (result.fail_error && result.fail_message) {
+            throw new Error(`${result.fail_error}: ${result.fail_message}`);
+          }
+        }
+        throw new Error(`Shopee APIエラー: ${data.error} - ${data.message}`);
+      }
+
+      return data;
+    } catch (error) {
+      Logger.log(`POSTリクエストエラー: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * 配送ドキュメントパラメータを取得
+   * @param {string} orderSn - 注文番号
+   * @param {string} packageNumber - パッケージ番号（任意）
+   * @return {Object} 配送ドキュメントパラメータ
+   */
+  getShippingDocumentParameter(orderSn, packageNumber = null) {
+    const endpoint = this.config.SHOPEE.ENDPOINTS.GET_SHIPPING_DOCUMENT_PARAMETER;
+
+    const orderItem = { order_sn: orderSn };
+    if (packageNumber) {
+      orderItem.package_number = packageNumber;
+    }
+
+    const payload = {
+      order_list: [orderItem]
+    };
+
+    try {
+      const response = this.postRequest(endpoint, payload);
+
+      if (response.response && response.response.result_list && response.response.result_list.length > 0) {
+        const result = response.response.result_list[0];
+        if (result.fail_error) {
+          throw new Error(`配送ドキュメントパラメータ取得エラー: ${result.fail_error} - ${result.fail_message}`);
+        }
+        return result;
+      }
+
+      throw new Error('配送ドキュメントパラメータが見つかりません');
+    } catch (error) {
+      Logger.log(`配送ドキュメントパラメータ取得エラー: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * 配送ドキュメント作成タスクを開始
+   * @param {string} orderSn - 注文番号
+   * @param {string} shippingDocumentType - ドキュメントタイプ（THERMAL_AIR_WAYBILLなど）
+   * @param {string} trackingNumber - 追跡番号（必須）
+   * @param {string} packageNumber - パッケージ番号（任意）
+   * @return {Object} 作成結果
+   */
+  createShippingDocument(orderSn, shippingDocumentType = 'THERMAL_AIR_WAYBILL', trackingNumber = null, packageNumber = null) {
+    const endpoint = this.config.SHOPEE.ENDPOINTS.CREATE_SHIPPING_DOCUMENT;
+
+    const orderItem = {
+      order_sn: orderSn,
+      shipping_document_type: shippingDocumentType
+    };
+    if (trackingNumber) {
+      orderItem.tracking_number = trackingNumber;
+    }
+    if (packageNumber) {
+      orderItem.package_number = packageNumber;
+    }
+
+    const payload = {
+      order_list: [orderItem]
+    };
+
+    try {
+      const response = this.postRequest(endpoint, payload);
+
+      if (response.response && response.response.result_list && response.response.result_list.length > 0) {
+        const result = response.response.result_list[0];
+        if (result.fail_error) {
+          // 詳細なエラーメッセージを含めてスロー
+          throw new Error(`${result.fail_error}: ${result.fail_message}`);
+        }
+        Logger.log(`配送ドキュメント作成タスクを開始しました: ${orderSn}`);
+        return result;
+      }
+
+      throw new Error('配送ドキュメント作成に失敗しました');
+    } catch (error) {
+      Logger.log(`配送ドキュメント作成エラー: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * 配送ドキュメントのステータスを確認
+   * @param {string} orderSn - 注文番号
+   * @param {string} shippingDocumentType - ドキュメントタイプ
+   * @param {string} packageNumber - パッケージ番号（任意）
+   * @return {Object} ステータス結果
+   */
+  getShippingDocumentResult(orderSn, shippingDocumentType = 'THERMAL_AIR_WAYBILL', packageNumber = null) {
+    const endpoint = this.config.SHOPEE.ENDPOINTS.GET_SHIPPING_DOCUMENT_RESULT;
+
+    const orderItem = {
+      order_sn: orderSn,
+      shipping_document_type: shippingDocumentType
+    };
+    if (packageNumber) {
+      orderItem.package_number = packageNumber;
+    }
+
+    const payload = {
+      order_list: [orderItem]
+    };
+
+    try {
+      const response = this.postRequest(endpoint, payload);
+
+      if (response.response && response.response.result_list && response.response.result_list.length > 0) {
+        const result = response.response.result_list[0];
+        if (result.fail_error) {
+          throw new Error(`ステータス確認エラー: ${result.fail_error} - ${result.fail_message}`);
+        }
+        return result;
+      }
+
+      throw new Error('ステータス確認に失敗しました');
+    } catch (error) {
+      Logger.log(`ステータス確認エラー: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * 配送ドキュメント（PDF）をダウンロード
+   * @param {string} orderSn - 注文番号
+   * @param {string} shippingDocumentType - ドキュメントタイプ
+   * @param {string} packageNumber - パッケージ番号（任意）
+   * @return {Blob} PDFのBlob
+   */
+  downloadShippingDocument(orderSn, shippingDocumentType = 'THERMAL_AIR_WAYBILL', packageNumber = null) {
+    const endpoint = this.config.SHOPEE.ENDPOINTS.DOWNLOAD_SHIPPING_DOCUMENT;
+
+    const orderItem = { order_sn: orderSn };
+    if (packageNumber) {
+      orderItem.package_number = packageNumber;
+    }
+
+    const payload = {
+      shipping_document_type: shippingDocumentType,
+      order_list: [orderItem]
+    };
+
+    try {
+      const response = this.postRequest(endpoint, payload);
+
+      // Google Apps ScriptではBlobかどうかをgetBytes関数の存在で判定
+      if (response && typeof response.getBytes === 'function') {
+        Logger.log(`配送ドキュメントをダウンロードしました: ${orderSn}`);
+        return response;
+      }
+
+      throw new Error('PDFのダウンロードに失敗しました');
+    } catch (error) {
+      Logger.log(`ダウンロードエラー: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Logistics APIからTracking Numberを取得
+   * @param {string} orderSn - 注文番号
+   * @return {Object} {trackingNumber, packageNumber} または null
+   */
+  getTrackingNumber(orderSn) {
+    try {
+      // まず注文詳細からpackage_numberを取得
+      const orderDetail = this.getOrderDetail(orderSn);
+      let packageNumber = null;
+
+      if (orderDetail.package_list && orderDetail.package_list.length > 0) {
+        packageNumber = orderDetail.package_list[0].package_number;
+      }
+
+      // v2.logistics.get_tracking_number API を呼び出し（GETリクエスト）
+      const endpoint = this.config.SHOPEE.ENDPOINTS.GET_TRACKING_NUMBER;
+
+      const params = {
+        order_sn: orderSn
+      };
+      if (packageNumber) {
+        params.package_number = packageNumber;
+      }
+
+      const response = this.request(endpoint, params);
+
+      if (response.response) {
+        const result = response.response;
+
+        // first_mile_tracking_number または tracking_number を取得
+        const trackingNumber = result.tracking_number || result.first_mile_tracking_number || null;
+
+        if (trackingNumber) {
+          Logger.log(`Tracking Number取得成功: ${trackingNumber}`);
+          return {
+            trackingNumber: trackingNumber,
+            packageNumber: result.package_number || packageNumber
+          };
+        }
+      }
+
+      Logger.log('Tracking Numberが見つかりません');
+      return null;
+
+    } catch (error) {
+      Logger.log(`Tracking Number取得エラー: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * 配送ラベルを取得（create → wait → download の一連の流れ）
+   * @param {string} orderSn - 注文番号
+   * @param {string} shippingDocumentType - ドキュメントタイプ（任意）
+   * @param {number} maxWaitSeconds - 最大待機時間（秒）
+   * @return {Blob} PDFのBlob
+   */
+  getShippingLabel(orderSn, shippingDocumentType = null, maxWaitSeconds = 30) {
+    Logger.log(`=== 配送ラベル取得開始: ${orderSn} ===`);
+
+    try {
+      // Step 0-A: Tracking Number を取得
+      const trackingInfo = this.getTrackingNumber(orderSn);
+      if (!trackingInfo || !trackingInfo.trackingNumber) {
+        throw new Error('Tracking Numberが見つかりません。Arrange Shipmentが完了しているか確認してください。');
+      }
+      Logger.log(`Tracking Number: ${trackingInfo.trackingNumber}`);
+
+      // Step 0-B: ドキュメントタイプを確認（指定がない場合）
+      if (!shippingDocumentType) {
+        const docParam = this.getShippingDocumentParameter(orderSn);
+        shippingDocumentType = docParam.suggest_shipping_document_type || 'THERMAL_AIR_WAYBILL';
+        Logger.log(`推奨ドキュメントタイプ: ${shippingDocumentType}`);
+      }
+
+      // Step 1: 配送ドキュメント作成タスクを開始（tracking_number付き）
+      this.createShippingDocument(orderSn, shippingDocumentType, trackingInfo.trackingNumber, trackingInfo.packageNumber);
+      Utilities.sleep(1000);
+
+      // Step 2: ステータスがREADYになるまで待機
+      const checkInterval = 3000; // 3秒間隔
+      const maxChecks = Math.ceil((maxWaitSeconds * 1000) / checkInterval);
+
+      for (let i = 0; i < maxChecks; i++) {
+        const result = this.getShippingDocumentResult(orderSn, shippingDocumentType);
+        Logger.log(`ステータス確認 (${i + 1}/${maxChecks}): ${result.status}`);
+
+        if (result.status === 'READY') {
+          Logger.log('ドキュメント準備完了');
+          break;
+        } else if (result.status === 'FAILED') {
+          throw new Error('配送ドキュメントの作成に失敗しました');
+        }
+
+        if (i < maxChecks - 1) {
+          Utilities.sleep(checkInterval);
+        }
+      }
+
+      Utilities.sleep(1000);
+
+      // Step 3: PDFをダウンロード
+      const pdfBlob = this.downloadShippingDocument(orderSn, shippingDocumentType);
+      pdfBlob.setName(`${orderSn}_shipping_label.pdf`);
+
+      Logger.log(`=== 配送ラベル取得完了: ${orderSn} ===`);
+      return pdfBlob;
+
+    } catch (error) {
+      Logger.log(`配送ラベル取得エラー: ${error.message}`);
+      throw error;
+    }
+  }
 }
 
 /**
@@ -316,4 +667,19 @@ function testGetOrderList() {
 
   Logger.log(`取得した注文数: ${orders.length}`);
   Logger.log(JSON.stringify(orders, null, 2));
+}
+
+/**
+ * テスト用：配送ラベルを取得
+ */
+function testGetShippingLabel() {
+  const api = new ShopeeAPI();
+  const orderSn = 'YOUR_ORDER_SN_HERE'; // 実際の注文番号に置き換え
+
+  try {
+    const pdfBlob = api.getShippingLabel(orderSn);
+    Logger.log(`PDFサイズ: ${pdfBlob.getBytes().length} bytes`);
+  } catch (error) {
+    Logger.log(`エラー: ${error.message}`);
+  }
 }

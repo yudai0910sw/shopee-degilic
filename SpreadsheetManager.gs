@@ -257,6 +257,94 @@ class SpreadsheetManager {
   getUrl() {
     return this.spreadsheet.getUrl();
   }
+
+  /**
+   * 配送ラベルが未設定の注文を取得
+   * @param {number} limit - 取得する最大件数（デフォルト10件）
+   * @return {Array} 注文情報の配列 [{row, orderSn, status}, ...]
+   */
+  getOrdersWithoutShippingLabel(limit = 10) {
+    const lastRow = this.sheet.getLastRow();
+
+    if (lastRow <= 1) {
+      return [];
+    }
+
+    // D列（注文ID）、B列（ステータス）、J列（配送ラベルデータ）を取得
+    const dataRange = this.sheet.getRange(2, 1, lastRow - 1, 19);
+    const data = dataRange.getValues();
+
+    const ordersWithoutLabel = [];
+
+    for (let i = 0; i < data.length; i++) {
+      const orderSn = data[i][3];        // D列（4番目、0-indexed: 3）
+      const status = data[i][1];          // B列（2番目、0-indexed: 1）
+      const shippingLabel = data[i][9];   // J列（10番目、0-indexed: 9）
+
+      // 配送ラベルが空で、注文IDがある場合
+      if (orderSn && !shippingLabel) {
+        // 発送可能なステータスかチェック（発送準備中、処理中）
+        // 注意: SHIPPED（発送済み）は既にピックアップ済みのため印刷不可
+        const validStatuses = ['発送準備中', '処理中', 'READY_TO_SHIP', 'PROCESSED'];
+        if (validStatuses.includes(status)) {
+          ordersWithoutLabel.push({
+            row: i + 2, // 実際の行番号（ヘッダー行 + 0-indexed補正）
+            orderSn: orderSn,
+            status: status
+          });
+        }
+      }
+
+      // 上限に達したら終了
+      if (ordersWithoutLabel.length >= limit) {
+        break;
+      }
+    }
+
+    Logger.log(`配送ラベル未設定の注文: ${ordersWithoutLabel.length}件`);
+    return ordersWithoutLabel;
+  }
+
+  /**
+   * 特定の注文の配送ラベルURLを更新
+   * @param {string} orderSn - 注文番号
+   * @param {string} labelUrl - 配送ラベルのURL
+   * @return {boolean} 更新成功の場合true
+   */
+  updateShippingLabel(orderSn, labelUrl) {
+    const lastRow = this.sheet.getLastRow();
+
+    if (lastRow <= 1) {
+      return false;
+    }
+
+    // D列（注文ID）を検索
+    const orderIdColumn = this.sheet.getRange(2, 4, lastRow - 1, 1).getValues();
+
+    for (let i = 0; i < orderIdColumn.length; i++) {
+      if (orderIdColumn[i][0] === orderSn) {
+        const row = i + 2; // 実際の行番号
+        // J列（10列目）に配送ラベルURLを設定
+        this.sheet.getRange(row, 10).setValue(labelUrl);
+        Logger.log(`配送ラベルURLを更新: ${orderSn} → ${labelUrl}`);
+        return true;
+      }
+    }
+
+    Logger.log(`注文が見つかりません: ${orderSn}`);
+    return false;
+  }
+
+  /**
+   * 行番号を指定して配送ラベルURLを更新
+   * @param {number} row - 行番号
+   * @param {string} labelUrl - 配送ラベルのURL
+   */
+  updateShippingLabelByRow(row, labelUrl) {
+    // J列（10列目）に配送ラベルURLを設定
+    this.sheet.getRange(row, 10).setValue(labelUrl);
+    Logger.log(`行${row}の配送ラベルURLを更新: ${labelUrl}`);
+  }
 }
 
 /**

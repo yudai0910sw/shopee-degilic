@@ -322,3 +322,196 @@ function fetchLatestOrders(limit = 10, daysBack = 15) {
     throw error;
   }
 }
+
+// ============================================
+// 配送ラベル取得機能
+// ============================================
+
+/**
+ * 配送ラベル未設定の注文の配送ラベルを一括取得
+ *
+ * このメソッドは定期的に実行され、配送ラベルが未設定の注文を検索し、
+ * Shopee APIから配送ラベルを取得してGoogle Driveにアップロードし、
+ * スプレッドシートにURLを記録します。
+ *
+ * @param {number} limit - 一度に処理する最大件数（デフォルト5件）
+ */
+function fetchShippingLabels(limit = 5) {
+  Logger.log('=== 配送ラベル一括取得開始 ===');
+
+  try {
+    const config = getConfig();
+    validateConfig(config);
+
+    const shopeeAPI = new ShopeeAPI();
+    const spreadsheetManager = new SpreadsheetManager();
+    const driveManager = new DriveManager();
+
+    // 配送ラベル未設定の注文を取得
+    const ordersWithoutLabel = spreadsheetManager.getOrdersWithoutShippingLabel(limit);
+
+    if (ordersWithoutLabel.length === 0) {
+      Logger.log('配送ラベル未設定の注文はありません');
+      Logger.log('=== 配送ラベル一括取得終了 ===');
+      return;
+    }
+
+    Logger.log(`${ordersWithoutLabel.length}件の注文を処理します`);
+
+    let successCount = 0;
+    let skipCount = 0;
+    let failCount = 0;
+
+    for (const order of ordersWithoutLabel) {
+      try {
+        Logger.log(`処理中: ${order.orderSn} (行${order.row})`);
+
+        // 配送ラベルを取得
+        const pdfBlob = shopeeAPI.getShippingLabel(order.orderSn);
+
+        // Google Driveにアップロード
+        const labelUrl = driveManager.uploadAndGetUrl(pdfBlob, order.orderSn);
+
+        // スプレッドシートを更新
+        spreadsheetManager.updateShippingLabelByRow(order.row, labelUrl);
+
+        successCount++;
+        Logger.log(`完了: ${order.orderSn}`);
+
+        // APIレート制限対策（次の処理まで2秒待機）
+        Utilities.sleep(2000);
+
+      } catch (error) {
+        const errorMessage = error.message;
+
+        // スキップ対象のエラーかチェック
+        if (errorMessage.includes('Tracking Numberが見つかりません')) {
+          // Arrange Shipment未完了
+          skipCount++;
+          Logger.log(`スキップ: ${order.orderSn} - Arrange Shipment未完了`);
+        } else if (errorMessage.includes('parcel has been shipped') || errorMessage.includes('package_can_not_print')) {
+          // 既に発送済み
+          skipCount++;
+          Logger.log(`スキップ: ${order.orderSn} - 既に発送済み（ラベル印刷不可）`);
+        } else {
+          // その他のエラー
+          failCount++;
+          Logger.log(`失敗: ${order.orderSn} - ${errorMessage}`);
+        }
+
+        // 次の注文を処理
+        Utilities.sleep(1000);
+      }
+    }
+
+    Logger.log(`=== 配送ラベル一括取得完了 ===`);
+    Logger.log(`成功: ${successCount}件, スキップ: ${skipCount}件, 失敗: ${failCount}件`);
+
+  } catch (error) {
+    Logger.log(`エラーが発生しました: ${error.message}`);
+    Logger.log(error.stack);
+
+    // エラーをSlackに通知
+    try {
+      const slackNotifier = new SlackNotifier();
+      slackNotifier.notifyError(`配送ラベル取得でエラーが発生しました:\n${error.message}`);
+    } catch (notifyError) {
+      Logger.log(`Slack通知の送信に失敗しました: ${notifyError.message}`);
+    }
+
+    throw error;
+  }
+}
+
+/**
+ * 特定の注文の配送ラベルを取得
+ *
+ * @param {string} orderSn - 注文番号
+ */
+function fetchShippingLabelForOrder(orderSn) {
+  Logger.log(`=== 配送ラベル取得: ${orderSn} ===`);
+
+  try {
+    const config = getConfig();
+    validateConfig(config);
+
+    const shopeeAPI = new ShopeeAPI();
+    const spreadsheetManager = new SpreadsheetManager();
+    const driveManager = new DriveManager();
+
+    // 配送ラベルを取得
+    const pdfBlob = shopeeAPI.getShippingLabel(orderSn);
+
+    // Google Driveにアップロード
+    const labelUrl = driveManager.uploadAndGetUrl(pdfBlob, orderSn);
+
+    // スプレッドシートを更新
+    spreadsheetManager.updateShippingLabel(orderSn, labelUrl);
+
+    Logger.log(`=== 完了 ===`);
+    Logger.log(`配送ラベルURL: ${labelUrl}`);
+
+    return labelUrl;
+
+  } catch (error) {
+    Logger.log(`エラー: ${error.message}`);
+    throw error;
+  }
+}
+
+/**
+ * 配送ラベル取得用の定期トリガーを設定（30分ごと）
+ */
+function setupShippingLabelTrigger() {
+  // 既存のトリガーを削除
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'fetchShippingLabels') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+
+  // 新しいトリガーを作成（30分ごと）
+  ScriptApp.newTrigger('fetchShippingLabels')
+    .timeBased()
+    .everyMinutes(30)
+    .create();
+
+  Logger.log('配送ラベル取得用の30分ごとのトリガーを設定しました');
+}
+
+/**
+ * 配送ラベル取得用のトリガーを削除
+ */
+function deleteShippingLabelTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'fetchShippingLabels') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+
+  Logger.log('配送ラベル取得用のトリガーを削除しました');
+}
+
+/**
+ * すべてのトリガーを設定（main + fetchShippingLabels）
+ */
+function setupAllTriggers() {
+  setupTrigger();           // main用トリガー
+  setupShippingLabelTrigger(); // 配送ラベル取得用トリガー
+
+  Logger.log('すべてのトリガーを設定しました');
+}
+
+/**
+ * すべてのトリガーを削除
+ */
+function deleteAllTriggers() {
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    ScriptApp.deleteTrigger(trigger);
+  });
+
+  Logger.log('すべてのトリガーを削除しました');
+}
