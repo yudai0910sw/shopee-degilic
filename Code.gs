@@ -41,24 +41,33 @@ function main() {
 
     Logger.log(`${orders.length}件の注文を取得しました`);
 
+    // 既存注文のステータスを更新
+    const updatedCount = spreadsheetManager.updateOrderStatuses(orders);
+    if (updatedCount > 0) {
+      Logger.log(`${updatedCount}件の注文ステータスを更新しました`);
+    }
+
     // スプレッドシートに追加（重複チェックあり）
     const addedCount = spreadsheetManager.addOrders(orders);
 
-    if (addedCount === 0) {
-      Logger.log('新しい注文はありません（すべて既存）');
+    if (addedCount === 0 && updatedCount === 0) {
+      Logger.log('新しい注文・ステータス変更はありません');
       Logger.log('=== Shopee注文管理システム終了 ===');
       return;
     }
 
-    Logger.log(`${addedCount}件の新しい注文をスプレッドシートに追加しました`);
+    if (addedCount > 0) {
+      Logger.log(`${addedCount}件の新しい注文をスプレッドシートに追加しました`);
 
-    // Slackに通知（追加された注文のみ）
-    const addedOrders = orders.slice(0, addedCount);
-    const spreadsheetUrl = spreadsheetManager.getUrl();
+      // Slackに通知（追加された注文のみ）
+      const addedOrders = orders.slice(0, addedCount);
+      const spreadsheetUrl = spreadsheetManager.getUrl();
 
-    slackNotifier.notifyNewOrders(addedOrders, spreadsheetUrl);
+      slackNotifier.notifyNewOrders(addedOrders, spreadsheetUrl);
 
-    Logger.log('Slackに通知を送信しました');
+      Logger.log('Slackに通知を送信しました');
+    }
+
     Logger.log('=== Shopee注文管理システム終了 ===');
   } catch (error) {
     Logger.log(`エラーが発生しました: ${error.message}`);
@@ -364,7 +373,7 @@ function fetchShippingLabels(limit = 5) {
 
     for (const order of ordersWithoutLabel) {
       try {
-        Logger.log(`処理中: ${order.orderSn} (行${order.row})`);
+        Logger.log(`処理中: ${order.orderSn} (${order.rows.length}行)`);
 
         // 配送ラベルを取得
         const pdfBlob = shopeeAPI.getShippingLabel(order.orderSn);
@@ -372,8 +381,8 @@ function fetchShippingLabels(limit = 5) {
         // Google Driveにアップロード
         const labelUrl = driveManager.uploadAndGetUrl(pdfBlob, order.orderSn);
 
-        // スプレッドシートを更新
-        spreadsheetManager.updateShippingLabelByRow(order.row, labelUrl);
+        // スプレッドシートを更新（同じ注文IDの全行を更新）
+        spreadsheetManager.updateShippingLabelByRows(order.rows, labelUrl);
 
         successCount++;
         Logger.log(`完了: ${order.orderSn}`);

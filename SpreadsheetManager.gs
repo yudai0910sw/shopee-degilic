@@ -89,9 +89,9 @@ class SpreadsheetManager {
   }
 
   /**
-   * 注文データをスプレッドシートに追加
+   * 注文データをスプレッドシートに追加（明細方式：1商品=1行）
    * @param {Array} orders - 注文データの配列
-   * @return {number} 追加された行数
+   * @return {number} 追加された注文数
    */
   addOrders(orders) {
     if (!orders || orders.length === 0) {
@@ -110,22 +110,31 @@ class SpreadsheetManager {
       return 0;
     }
 
-    // 注文データを行データに変換
-    const rows = newOrders.map(order => this.orderToRow(order));
+    // 注文データを行データに変換（1注文で複数行になる可能性あり）
+    const allRows = [];
+    for (const order of newOrders) {
+      const rows = this.orderToRows(order);
+      allRows.push(...rows);
+    }
+
+    if (allRows.length === 0) {
+      Logger.log('追加する行がありません');
+      return 0;
+    }
 
     // データを追加
     const lastRow = this.sheet.getLastRow();
     const startRow = lastRow + 1;
 
-    this.sheet.getRange(startRow, 1, rows.length, rows[0].length).setValues(rows);
+    this.sheet.getRange(startRow, 1, allRows.length, allRows[0].length).setValues(allRows);
 
-    Logger.log(`${rows.length}件の新しい注文を追加しました`);
-    return rows.length;
+    Logger.log(`${newOrders.length}件の注文（${allRows.length}行）を追加しました`);
+    return newOrders.length;
   }
 
   /**
-   * 既存の注文IDを取得
-   * @return {Array} 注文IDの配列
+   * 既存の注文IDを取得（ユニーク）
+   * @return {Array} 注文IDの配列（重複なし）
    */
   getExistingOrderIds() {
     const lastRow = this.sheet.getLastRow();
@@ -137,21 +146,19 @@ class SpreadsheetManager {
     // 注文ID列（D列 = 4列目）のデータを取得
     const orderIdColumn = this.sheet.getRange(2, 4, lastRow - 1, 1).getValues();
 
-    return orderIdColumn.map(row => row[0]).filter(id => id);
+    // ユニークな注文IDを返す
+    const orderIds = orderIdColumn.map(row => row[0]).filter(id => id);
+    return [...new Set(orderIds)];
   }
 
   /**
-   * 注文オブジェクトを行データに変換
+   * 注文オブジェクトを行データに変換（明細方式：商品ごとに1行）
    * @param {Object} order - 注文データ
-   * @return {Array} 行データ
+   * @return {Array} 行データの配列（複数行）
    */
-  orderToRow(order) {
-    // 商品情報を取得（複数商品がある場合は最初の商品のみ）
-    const item = order.item_list && order.item_list.length > 0 ? order.item_list[0] : {};
-
-    // バリエーション名を取得
-    const modelName = item.model_name || '';
-    const variations = this.parseVariations(modelName);
+  orderToRows(order) {
+    const rows = [];
+    const items = order.item_list && order.item_list.length > 0 ? order.item_list : [{}];
 
     // 注文日をフォーマット
     const orderDate = this.formatDate(order.create_time);
@@ -162,36 +169,50 @@ class SpreadsheetManager {
     // 配送ステータス
     const isShipped = ['SHIPPED', 'COMPLETED', 'TO_RETURN'].includes(order.order_status);
 
-    // 金額計算
+    // 金額計算（注文全体の金額）
     const totalAmount = order.total_amount || 0;
     const actualShippingFee = order.actual_shipping_fee || 0;
 
-    // 手数料情報（実際のAPIレスポンスに応じて調整が必要）
-    const commissionFee = ''; // APIから取得できない場合は空
-    const internationalShippingFee = actualShippingFee;
+    // 商品数で割った金額（明細行ごとに按分）
+    const itemCount = items.length;
+    const amountPerItem = itemCount > 0 ? totalAmount / itemCount : totalAmount;
+    const shippingPerItem = itemCount > 0 ? actualShippingFee / itemCount : actualShippingFee;
 
-    // 行データを作成
-    return [
-      orderDate,                      // 注文日
-      orderStatus,                    // 注文ステータス
-      'Singapore',                    // 国
-      order.order_sn,                 // 注文ID
-      item.item_name || '',           // 商品タイトル
-      variations[0] || '',            // バリエーション名①
-      variations[1] || '',            // バリエーション名②
-      item.model_sku || '',           // SKU
-      item.model_quantity_purchased || 0, // 注文個数
-      '',                             // 配送ラベルデータ
-      isShipped ? '済' : '未',        // 発送済
-      '',                             // 備考欄
-      '',                             // 空列
-      totalAmount,                    // 売上
-      commissionFee,                  // 販売手数料
-      internationalShippingFee,       // 国際送料
-      '',                             // 原価（手動入力）
-      '',                             // 利益（計算式を後で設定）
-      ''                              // 還付込利益（計算式を後で設定）
-    ];
+    // 商品ごとに行を作成
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+
+      // バリエーション名を取得
+      const modelName = item.model_name || '';
+      const variations = this.parseVariations(modelName);
+
+      // 行データを作成
+      const row = [
+        orderDate,                      // 注文日
+        orderStatus,                    // 注文ステータス
+        'Singapore',                    // 国
+        order.order_sn,                 // 注文ID
+        item.item_name || '',           // 商品タイトル
+        variations[0] || '',            // バリエーション名①
+        variations[1] || '',            // バリエーション名②
+        item.model_sku || '',           // SKU
+        item.model_quantity_purchased || 0, // 注文個数
+        '',                             // 配送ラベルデータ
+        isShipped ? '済' : '未',        // 発送済
+        '',                             // 備考欄
+        '',                             // 空列
+        i === 0 ? totalAmount : '',     // 売上（最初の行のみに全額）
+        '',                             // 販売手数料
+        i === 0 ? actualShippingFee : '', // 国際送料（最初の行のみ）
+        '',                             // 原価（手動入力）
+        '',                             // 利益（計算式を後で設定）
+        ''                              // 還付込利益（計算式を後で設定）
+      ];
+
+      rows.push(row);
+    }
+
+    return rows;
   }
 
   /**
@@ -259,9 +280,9 @@ class SpreadsheetManager {
   }
 
   /**
-   * 配送ラベルが未設定の注文を取得
+   * 配送ラベルが未設定の注文を取得（注文ID単位でユニーク）
    * @param {number} limit - 取得する最大件数（デフォルト10件）
-   * @return {Array} 注文情報の配列 [{row, orderSn, status}, ...]
+   * @return {Array} 注文情報の配列 [{orderSn, status, rows}, ...]
    */
   getOrdersWithoutShippingLabel(limit = 10) {
     const lastRow = this.sheet.getLastRow();
@@ -274,25 +295,50 @@ class SpreadsheetManager {
     const dataRange = this.sheet.getRange(2, 1, lastRow - 1, 19);
     const data = dataRange.getValues();
 
-    const ordersWithoutLabel = [];
+    // 注文IDごとに情報を集約
+    const orderMap = {};
 
     for (let i = 0; i < data.length; i++) {
       const orderSn = data[i][3];        // D列（4番目、0-indexed: 3）
       const status = data[i][1];          // B列（2番目、0-indexed: 1）
       const shippingLabel = data[i][9];   // J列（10番目、0-indexed: 9）
+      const row = i + 2;                  // 実際の行番号
 
-      // 配送ラベルが空で、注文IDがある場合
-      if (orderSn && !shippingLabel) {
-        // 発送可能なステータスかチェック（発送準備中、処理中）
-        // 注意: SHIPPED（発送済み）は既にピックアップ済みのため印刷不可
-        const validStatuses = ['発送準備中', '処理中', 'READY_TO_SHIP', 'PROCESSED'];
-        if (validStatuses.includes(status)) {
-          ordersWithoutLabel.push({
-            row: i + 2, // 実際の行番号（ヘッダー行 + 0-indexed補正）
-            orderSn: orderSn,
-            status: status
-          });
-        }
+      if (!orderSn) continue;
+
+      // 既にこの注文IDが登録されていなければ初期化
+      if (!orderMap[orderSn]) {
+        orderMap[orderSn] = {
+          orderSn: orderSn,
+          status: status,
+          rows: [],
+          hasLabel: false
+        };
+      }
+
+      // 行を追加
+      orderMap[orderSn].rows.push(row);
+
+      // 1つでもラベルがあればフラグを立てる
+      if (shippingLabel) {
+        orderMap[orderSn].hasLabel = true;
+      }
+    }
+
+    // ラベル未設定かつ有効なステータスの注文を抽出
+    const validStatuses = ['発送準備中', '処理中', 'READY_TO_SHIP', 'PROCESSED'];
+    const ordersWithoutLabel = [];
+
+    for (const orderSn in orderMap) {
+      const orderInfo = orderMap[orderSn];
+
+      // ラベル未設定かつ有効なステータス
+      if (!orderInfo.hasLabel && validStatuses.includes(orderInfo.status)) {
+        ordersWithoutLabel.push({
+          orderSn: orderInfo.orderSn,
+          status: orderInfo.status,
+          rows: orderInfo.rows  // この注文IDに紐づく全ての行番号
+        });
       }
 
       // 上限に達したら終了
@@ -306,37 +352,55 @@ class SpreadsheetManager {
   }
 
   /**
-   * 特定の注文の配送ラベルURLを更新
+   * 特定の注文の配送ラベルURLを更新（同じ注文IDの全行を更新）
    * @param {string} orderSn - 注文番号
    * @param {string} labelUrl - 配送ラベルのURL
-   * @return {boolean} 更新成功の場合true
+   * @return {number} 更新した行数
    */
   updateShippingLabel(orderSn, labelUrl) {
     const lastRow = this.sheet.getLastRow();
 
     if (lastRow <= 1) {
-      return false;
+      return 0;
     }
 
     // D列（注文ID）を検索
     const orderIdColumn = this.sheet.getRange(2, 4, lastRow - 1, 1).getValues();
 
+    let updatedRows = 0;
     for (let i = 0; i < orderIdColumn.length; i++) {
       if (orderIdColumn[i][0] === orderSn) {
         const row = i + 2; // 実際の行番号
         // J列（10列目）に配送ラベルURLを設定
         this.sheet.getRange(row, 10).setValue(labelUrl);
-        Logger.log(`配送ラベルURLを更新: ${orderSn} → ${labelUrl}`);
-        return true;
+        updatedRows++;
       }
     }
 
-    Logger.log(`注文が見つかりません: ${orderSn}`);
-    return false;
+    if (updatedRows > 0) {
+      Logger.log(`配送ラベルURLを更新: ${orderSn} → ${labelUrl} (${updatedRows}行)`);
+    } else {
+      Logger.log(`注文が見つかりません: ${orderSn}`);
+    }
+
+    return updatedRows;
   }
 
   /**
-   * 行番号を指定して配送ラベルURLを更新
+   * 複数の行番号を指定して配送ラベルURLを更新
+   * @param {Array} rows - 行番号の配列
+   * @param {string} labelUrl - 配送ラベルのURL
+   */
+  updateShippingLabelByRows(rows, labelUrl) {
+    for (const row of rows) {
+      // J列（10列目）に配送ラベルURLを設定
+      this.sheet.getRange(row, 10).setValue(labelUrl);
+    }
+    Logger.log(`行${rows.join(',')}の配送ラベルURLを更新: ${labelUrl}`);
+  }
+
+  /**
+   * 行番号を指定して配送ラベルURLを更新（単一行）
    * @param {number} row - 行番号
    * @param {string} labelUrl - 配送ラベルのURL
    */
@@ -344,6 +408,112 @@ class SpreadsheetManager {
     // J列（10列目）に配送ラベルURLを設定
     this.sheet.getRange(row, 10).setValue(labelUrl);
     Logger.log(`行${row}の配送ラベルURLを更新: ${labelUrl}`);
+  }
+
+  /**
+   * 既存注文のステータスを取得（注文ID → {rows, status}のマップ）
+   * @return {Object} 注文IDをキーとしたステータス情報のマップ
+   */
+  getExistingOrderStatuses() {
+    const lastRow = this.sheet.getLastRow();
+
+    if (lastRow <= 1) {
+      return {};
+    }
+
+    // B列（ステータス）、D列（注文ID）を取得
+    const dataRange = this.sheet.getRange(2, 1, lastRow - 1, 4);
+    const data = dataRange.getValues();
+
+    const statusMap = {};
+
+    for (let i = 0; i < data.length; i++) {
+      const orderSn = data[i][3];  // D列（4番目、0-indexed: 3）
+      const status = data[i][1];    // B列（2番目、0-indexed: 1）
+      const row = i + 2;            // 実際の行番号
+
+      if (orderSn) {
+        // 既にこの注文IDが登録されていなければ初期化
+        if (!statusMap[orderSn]) {
+          statusMap[orderSn] = {
+            rows: [],
+            status: status
+          };
+        }
+        // 行を追加
+        statusMap[orderSn].rows.push(row);
+      }
+    }
+
+    return statusMap;
+  }
+
+  /**
+   * 注文のステータスを更新（同じ注文IDの全行を更新）
+   * @param {Array} orders - APIから取得した注文データの配列
+   * @return {number} 更新された注文数
+   */
+  updateOrderStatuses(orders) {
+    if (!orders || orders.length === 0) {
+      return 0;
+    }
+
+    // 既存のステータス情報を取得
+    const existingStatuses = this.getExistingOrderStatuses();
+
+    let updatedCount = 0;
+
+    for (const order of orders) {
+      const orderSn = order.order_sn;
+      const existingInfo = existingStatuses[orderSn];
+
+      if (existingInfo) {
+        // 新しいステータスを日本語に変換
+        const newStatus = this.translateOrderStatus(order.order_status);
+
+        // ステータスが変わっていたら更新（全行を更新）
+        if (existingInfo.status !== newStatus) {
+          this.updateOrderStatusByRows(existingInfo.rows, order);
+          updatedCount++;
+          Logger.log(`ステータス更新: ${orderSn} (${existingInfo.status} → ${newStatus}) [${existingInfo.rows.length}行]`);
+        }
+      }
+    }
+
+    return updatedCount;
+  }
+
+  /**
+   * 複数行の注文情報を更新
+   * @param {Array} rows - 行番号の配列
+   * @param {Object} order - 注文データ
+   */
+  updateOrderStatusByRows(rows, order) {
+    const newStatus = this.translateOrderStatus(order.order_status);
+    const isShipped = ['SHIPPED', 'COMPLETED', 'TO_RETURN'].includes(order.order_status);
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+
+      // B列（2列目）にステータスを更新
+      this.sheet.getRange(row, 2).setValue(newStatus);
+
+      // K列（11列目）の発送済フラグを更新
+      this.sheet.getRange(row, 11).setValue(isShipped ? '済' : '未');
+
+      // 最初の行のみ金額を更新
+      if (i === 0) {
+        // N列（14列目）の売上を更新
+        if (order.total_amount !== undefined) {
+          this.sheet.getRange(row, 14).setValue(order.total_amount);
+        }
+
+        // P列（16列目）の国際送料を更新
+        if (order.actual_shipping_fee !== undefined) {
+          this.sheet.getRange(row, 16).setValue(order.actual_shipping_fee);
+        }
+      }
+    }
   }
 }
 
