@@ -78,6 +78,23 @@ class SlackNotifier {
   }
 
   /**
+   * 処理中になった注文をSlackに通知
+   * @param {Array} orders - 注文データの配列
+   * @param {string} spreadsheetUrl - スプレッドシートURL
+   */
+  notifyProcessedOrders(orders, spreadsheetUrl) {
+    if (!orders || orders.length === 0) {
+      Logger.log('通知する注文がありません');
+      return;
+    }
+
+    const text = `:package: *${orders.length} 件の注文が処理中になりました*`;
+    const attachments = this.formatOrderAttachments(orders, spreadsheetUrl);
+
+    this.send(text, attachments);
+  }
+
+  /**
    * 注文データを添付情報にフォーマット
    * @param {Array} orders - 注文データの配列
    * @param {string} spreadsheetUrl - スプレッドシートURL
@@ -92,6 +109,11 @@ class SlackNotifier {
         const item = order.item_list && order.item_list.length > 0 ? order.item_list[0] : {};
 
         const fields = [
+          {
+            title: 'ショップ',
+            value: this.formatShopName(order._shopName),
+            short: true
+          },
           {
             title: '注文ID',
             value: order.order_sn,
@@ -212,6 +234,21 @@ class SlackNotifier {
   }
 
   /**
+   * ショップ名を国旗絵文字付きでフォーマット
+   * @param {string} shopName - ショップ名（Singapore, Malaysia, Philippines）
+   * @return {string} フォーマット済みのショップ名
+   */
+  formatShopName(shopName) {
+    const shopMap = {
+      'Singapore': ':flag-sg: Singapore',
+      'Malaysia': ':flag-my: Malaysia',
+      'Philippines': ':flag-ph: Philippines'
+    };
+
+    return shopMap[shopName] || shopName || '不明';
+  }
+
+  /**
    * エラー通知をSlackに送信
    * @param {string} errorMessage - エラーメッセージ
    */
@@ -230,28 +267,61 @@ class SlackNotifier {
 }
 
 /**
- * テスト用：Slack通知テスト
+ * テスト用：処理中通知テスト
+ *
+ * GASエディタでこの関数を実行すると、実際にSlackに通知が送信されます。
+ * 複数の国からの注文がどのように表示されるか確認できます。
  */
-function testSlackNotification() {
+function testProcessedOrderNotification() {
   const notifier = new SlackNotifier();
 
   const sampleOrders = [
     {
-      order_sn: 'TEST001',
+      order_sn: 'SG240201TEST001',
       create_time: Math.floor(Date.now() / 1000),
-      order_status: 'READY_TO_SHIP',
-      total_amount: 50.00,
+      order_status: 'PROCESSED',
+      total_amount: 45.50,
+      _shopName: 'Singapore',
       item_list: [
         {
-          item_name: 'テスト商品1',
-          model_sku: 'TEST-SKU-001',
+          item_name: 'サンプル商品A（シンガポール）',
+          model_sku: 'SKU-SG-001',
+          model_quantity_purchased: 1
+        }
+      ]
+    },
+    {
+      order_sn: 'MY240201TEST002',
+      create_time: Math.floor(Date.now() / 1000),
+      order_status: 'PROCESSED',
+      total_amount: 89.90,
+      _shopName: 'Malaysia',
+      item_list: [
+        {
+          item_name: 'サンプル商品B（マレーシア）',
+          model_sku: 'SKU-MY-002',
+          model_quantity_purchased: 3
+        }
+      ]
+    },
+    {
+      order_sn: 'PH240201TEST003',
+      create_time: Math.floor(Date.now() / 1000),
+      order_status: 'PROCESSED',
+      total_amount: 120.00,
+      _shopName: 'Philippines',
+      item_list: [
+        {
+          item_name: 'サンプル商品C（フィリピン）',
+          model_sku: 'SKU-PH-003',
           model_quantity_purchased: 2
         }
       ]
     }
   ];
 
-  notifier.notifyNewOrders(sampleOrders, 'https://docs.google.com/spreadsheets/d/xxx');
+  notifier.notifyProcessedOrders(sampleOrders, 'https://docs.google.com/spreadsheets/d/xxx');
+  Logger.log('テスト通知を送信しました');
 }
 
 /**

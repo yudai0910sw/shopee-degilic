@@ -473,17 +473,18 @@ class SpreadsheetManager {
   /**
    * 注文のステータスを更新（同じ注文IDの全行を更新）
    * @param {Array} orders - APIから取得した注文データの配列
-   * @return {number} 更新された注文数
+   * @return {Object} { updatedCount: 更新された注文数, processedOrders: 処理中になった注文の配列 }
    */
   updateOrderStatuses(orders) {
     if (!orders || orders.length === 0) {
-      return 0;
+      return { updatedCount: 0, processedOrders: [] };
     }
 
     // 既存のステータス情報を取得
     const existingStatuses = this.getExistingOrderStatuses();
 
     let updatedCount = 0;
+    const processedOrders = [];
 
     for (const order of orders) {
       const orderSn = order.order_sn;
@@ -498,11 +499,16 @@ class SpreadsheetManager {
           this.updateOrderStatusByRows(existingInfo.rows, order);
           updatedCount++;
           Logger.log(`ステータス更新: ${orderSn} (${existingInfo.status} → ${newStatus}) [${existingInfo.rows.length}行]`);
+
+          // 処理中（PROCESSED）に変わった注文を記録
+          if (order.order_status === 'PROCESSED') {
+            processedOrders.push(order);
+          }
         }
       }
     }
 
-    return updatedCount;
+    return { updatedCount, processedOrders };
   }
 
   /**

@@ -37,7 +37,7 @@ function main() {
     const slackNotifier = new SlackNotifier();
     let totalAdded = 0;
     let totalUpdated = 0;
-    const allAddedOrders = [];
+    const allProcessedOrders = [];
 
     // 各ショップを処理
     for (const shopCode of activeShops) {
@@ -61,10 +61,14 @@ function main() {
         Logger.log(`${shopCode}: ${orders.length}件の注文を取得しました`);
 
         // 既存注文のステータスを更新
-        const updatedCount = spreadsheetManager.updateOrderStatuses(orders);
-        if (updatedCount > 0) {
-          Logger.log(`${shopCode}: ${updatedCount}件の注文ステータスを更新しました`);
-          totalUpdated += updatedCount;
+        const updateResult = spreadsheetManager.updateOrderStatuses(orders);
+        if (updateResult.updatedCount > 0) {
+          Logger.log(`${shopCode}: ${updateResult.updatedCount}件の注文ステータスを更新しました`);
+          totalUpdated += updateResult.updatedCount;
+
+          // 処理中になった注文を収集（ショップ名を追加）
+          updateResult.processedOrders.forEach(order => order._shopName = shopConfig.name);
+          allProcessedOrders.push(...updateResult.processedOrders);
         }
 
         // スプレッドシートに追加（重複チェックあり）
@@ -73,11 +77,6 @@ function main() {
         if (addedCount > 0) {
           Logger.log(`${shopCode}: ${addedCount}件の新しい注文をスプレッドシートに追加しました`);
           totalAdded += addedCount;
-
-          // Slack通知用に注文を保存（ショップ名を追加）
-          const addedOrders = orders.slice(0, addedCount);
-          addedOrders.forEach(order => order._shopName = shopConfig.name);
-          allAddedOrders.push(...addedOrders);
         }
 
         // APIレート制限対策
@@ -92,10 +91,10 @@ function main() {
     Logger.log(`\n=== 処理サマリー ===`);
     Logger.log(`新規追加: ${totalAdded}件, ステータス更新: ${totalUpdated}件`);
 
-    // Slackに通知（全ショップの新規注文をまとめて）
-    if (allAddedOrders.length > 0) {
+    // Slackに通知（処理中になった注文をまとめて）
+    if (allProcessedOrders.length > 0) {
       const spreadsheetManager = new SpreadsheetManager('SG');
-      slackNotifier.notifyNewOrders(allAddedOrders, spreadsheetManager.getUrl());
+      slackNotifier.notifyProcessedOrders(allProcessedOrders, spreadsheetManager.getUrl());
       Logger.log('Slackに通知を送信しました');
     }
 
@@ -136,14 +135,14 @@ function mainForShop(shopCode) {
     return;
   }
 
-  const updatedCount = spreadsheetManager.updateOrderStatuses(orders);
+  const updateResult = spreadsheetManager.updateOrderStatuses(orders);
   const addedCount = spreadsheetManager.addOrders(orders);
 
-  Logger.log(`新規追加: ${addedCount}件, ステータス更新: ${updatedCount}件`);
+  Logger.log(`新規追加: ${addedCount}件, ステータス更新: ${updateResult.updatedCount}件`);
 
-  if (addedCount > 0) {
-    const addedOrders = orders.slice(0, addedCount);
-    slackNotifier.notifyNewOrders(addedOrders, spreadsheetManager.getUrl());
+  if (updateResult.processedOrders.length > 0) {
+    updateResult.processedOrders.forEach(order => order._shopName = shopConfig.name);
+    slackNotifier.notifyProcessedOrders(updateResult.processedOrders, spreadsheetManager.getUrl());
   }
 
   Logger.log(`=== ${shopCode}ショップの注文取得完了 ===`);
