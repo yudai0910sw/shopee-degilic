@@ -208,7 +208,7 @@ class SlackNotifier {
     }
 
     const date = new Date(timestamp * 1000);
-    return Utilities.formatDate(date, this.config.OTHER.TIMEZONE, this.config.OTHER.DATE_FORMAT);
+    return Utilities.formatDate(date, this.config.OTHER.DEFAULT_TIMEZONE, this.config.OTHER.DATE_FORMAT);
   }
 
   /**

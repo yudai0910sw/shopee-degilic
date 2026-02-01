@@ -5,20 +5,28 @@
  */
 
 /**
- * 認証URL生成
+ * 認証URL生成（ショップコード付き）
  *
  * この関数を実行してログに表示されるURLをセラーに送信し、認証してもらいます。
+ * リダイレクトURLにショップコードを含めることで、どの国のショップかを識別します。
  *
  * @param {string} redirectUrl - 認証後のリダイレクトURL（WebアプリのURL）
+ * @param {string} shopCode - ショップコード（SG, MY, PH）
  * @return {string} 認証URL
  */
-function generateAuthUrl(redirectUrl) {
+function generateAuthUrl(redirectUrl, shopCode = 'SG') {
   const config = getConfig();
   const partnerId = config.SHOPEE.PARTNER_ID;
   const partnerKey = config.SHOPEE.PARTNER_KEY;
 
   if (!partnerId || !partnerKey) {
     throw new Error('Partner IDとPartner Keyを設定してください');
+  }
+
+  // ショップコードの妥当性をチェック
+  const validCodes = CONFIG.SHOPS.map(s => s.code);
+  if (!validCodes.includes(shopCode)) {
+    throw new Error(`無効なショップコード: ${shopCode}。有効なコード: ${validCodes.join(', ')}`);
   }
 
   const timestamp = Math.floor(Date.now() / 1000);
@@ -34,21 +42,47 @@ function generateAuthUrl(redirectUrl) {
     })
     .join('');
 
-  // 本番環境の認証URLを構築（シンガポール）
-  const authUrl = `https://partner.shopeemobile.com/api/v2/shop/auth_partner?partner_id=${partnerId}&timestamp=${timestamp}&sign=${sign}&redirect=${encodeURIComponent(redirectUrl)}`;
+  // リダイレクトURLにショップコードを追加
+  const separator = redirectUrl.includes('?') ? '&' : '?';
+  const redirectWithCode = `${redirectUrl}${separator}shop_code=${shopCode}`;
 
-  Logger.log('=== 認証URL ===');
+  // 本番環境の認証URLを構築
+  const authUrl = `https://partner.shopeemobile.com/api/v2/shop/auth_partner?partner_id=${partnerId}&timestamp=${timestamp}&sign=${sign}&redirect=${encodeURIComponent(redirectWithCode)}`;
+
+  const shopInfo = CONFIG.SHOPS.find(s => s.code === shopCode);
+  Logger.log(`=== ${shopInfo.name} (${shopCode}) 認証URL ===`);
   Logger.log(authUrl);
   Logger.log('');
-  Logger.log('このURLをセラーに送信して認証してもらってください。');
+  Logger.log(`このURLでセラーに${shopInfo.name}ショップの認証をしてもらってください。`);
 
   return authUrl;
+}
+
+/**
+ * 全ショップの認証URLを一括生成
+ *
+ * @param {string} redirectUrl - 認証後のリダイレクトURL（WebアプリのURL）。省略時はデフォルトURLを使用
+ */
+function generateAllAuthUrls(redirectUrl) {
+  // デフォルトのリダイレクトURL（WebアプリURL）
+  if (!redirectUrl) {
+    redirectUrl = 'https://script.google.com/macros/s/AKfycbxzr5910TwP6F9PD1keoYtds4Q2vgp58HkQ1J_xKTIG3lUGeXOs4Cmop0y-bL5cvxoW/exec';
+  }
+
+  Logger.log('=== 全ショップの認証URL ===');
+  Logger.log('');
+
+  for (const shop of CONFIG.SHOPS) {
+    generateAuthUrl(redirectUrl, shop.code);
+    Logger.log('');
+  }
 }
 
 /**
  * Webアプリとして公開するためのdoGet関数
  *
  * Shopeeの認証コールバックを受け取ります。
+ * shop_codeパラメータで、どの国のショップかを識別します。
  *
  * デプロイ手順：
  * 1. GASエディタで「デプロイ」→「新しいデプロイ」
@@ -66,17 +100,23 @@ function doGet(e) {
   // 認証コールバック
   if (params.code && params.shop_id) {
     try {
+      // ショップコードを取得（デフォルトはSG）
+      const shopCode = params.shop_code || 'SG';
+
+      // ショップコードの妥当性をチェック
+      const shopInfo = CONFIG.SHOPS.find(s => s.code === shopCode);
+      if (!shopInfo) {
+        throw new Error(`無効なショップコード: ${shopCode}`);
+      }
+
       // アクセストークンを取得
       const result = getAccessTokenFromCode(params.code, params.shop_id);
 
-      // スクリプトプロパティに保存
-      const props = PropertiesService.getScriptProperties();
-      props.setProperty('SHOPEE_ACCESS_TOKEN', result.access_token);
-      props.setProperty('SHOPEE_REFRESH_TOKEN', result.refresh_token);
-      props.setProperty('SHOPEE_SHOP_ID', params.shop_id);
-      props.setProperty('TOKEN_EXPIRE_TIME', String(Date.now() + (result.expire_in * 1000)));
+      // ショップ固有の認証情報を保存
+      setShopCredentials(shopCode, params.shop_id, result.access_token, result.refresh_token);
 
-      Logger.log('アクセストークンを取得しました');
+      Logger.log(`${shopInfo.name}ショップのアクセストークンを取得しました`);
+      Logger.log(`Shop Code: ${shopCode}`);
       Logger.log(`Shop ID: ${params.shop_id}`);
       Logger.log(`Access Token: ${result.access_token}`);
       Logger.log(`Refresh Token: ${result.refresh_token}`);
@@ -109,16 +149,25 @@ function doGet(e) {
               .info p {
                 margin: 10px 0;
               }
+              .country-badge {
+                display: inline-block;
+                background-color: #ee4d2d;
+                color: white;
+                padding: 5px 15px;
+                border-radius: 20px;
+                margin-bottom: 15px;
+              }
             </style>
           </head>
           <body>
             <div class="success">✅ 認証成功！</div>
+            <div class="country-badge">${shopInfo.name} (${shopCode})</div>
             <div class="info">
               <p><strong>Shop ID:</strong> ${params.shop_id}</p>
               <p><strong>Access Token:</strong> ${result.access_token.substring(0, 20)}...</p>
               <p><strong>有効期限:</strong> 4時間</p>
               <p style="margin-top: 20px; color: #666;">
-                アクセストークンはスクリプトプロパティに自動保存されました。<br>
+                ${shopInfo.name}ショップの認証情報がスクリプトプロパティに保存されました。<br>
                 このウィンドウを閉じて構いません。
               </p>
             </div>
@@ -171,7 +220,7 @@ function doGet(e) {
     <html>
       <head>
         <meta charset="UTF-8">
-        <title>Shopee認証システム</title>
+        <title>Shopee認証システム（マルチショップ対応）</title>
         <style>
           body {
             font-family: Arial, sans-serif;
@@ -183,12 +232,27 @@ function doGet(e) {
           h1 {
             color: #ee4d2d;
           }
+          .shops {
+            text-align: left;
+            background: #f5f5f5;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+          }
         </style>
       </head>
       <body>
         <h1>Shopee認証システム</h1>
         <p>このURLは認証コールバック用です。</p>
         <p>認証URLを生成してセラーに送信してください。</p>
+        <div class="shops">
+          <p><strong>対応ショップ:</strong></p>
+          <ul>
+            <li>Singapore (SG)</li>
+            <li>Malaysia (MY)</li>
+            <li>Philippines (PH)</li>
+          </ul>
+        </div>
       </body>
     </html>
   `);
@@ -263,21 +327,21 @@ function getAccessTokenFromCode(code, shopId) {
 }
 
 /**
- * アクセストークンをリフレッシュ
+ * 特定ショップのアクセストークンをリフレッシュ
  *
- * この関数は定期的に実行されるトリガーで呼び出されます。
- *
+ * @param {string} shopCode - ショップコード（SG, MY, PH）
  * @return {Object} 新しいトークン情報
  */
-function refreshAccessToken() {
-  Logger.log('=== アクセストークンをリフレッシュ ===');
+function refreshShopAccessToken(shopCode) {
+  Logger.log(`=== ${shopCode}ショップのアクセストークンをリフレッシュ ===`);
 
   const props = PropertiesService.getScriptProperties();
-  const refreshToken = props.getProperty('SHOPEE_REFRESH_TOKEN');
-  const shopId = props.getProperty('SHOPEE_SHOP_ID');
+  const refreshToken = props.getProperty(`SHOP_${shopCode}_REFRESH_TOKEN`);
+  const shopId = props.getProperty(`SHOP_${shopCode}_ID`);
 
   if (!refreshToken || !shopId) {
-    throw new Error('Refresh TokenまたはShop IDが設定されていません。先に認証を行ってください。');
+    Logger.log(`${shopCode}: Refresh TokenまたはShop IDが設定されていません。スキップします。`);
+    return null;
   }
 
   const config = getConfig();
@@ -313,39 +377,69 @@ function refreshAccessToken() {
     muteHttpExceptions: true
   };
 
-  Logger.log(`トークンリフレッシュリクエスト: ${url}`);
+  try {
+    const response = UrlFetchApp.fetch(url, options);
+    const responseCode = response.getResponseCode();
+    const responseBody = response.getContentText();
 
-  const response = UrlFetchApp.fetch(url, options);
-  const responseCode = response.getResponseCode();
-  const responseBody = response.getContentText();
+    if (responseCode !== 200) {
+      throw new Error(`APIエラー: ${responseCode} - ${responseBody}`);
+    }
 
-  Logger.log(`レスポンスコード: ${responseCode}`);
-  Logger.log(`レスポンスボディ: ${responseBody}`);
+    const data = JSON.parse(responseBody);
 
-  if (responseCode !== 200) {
-    throw new Error(`APIエラー: ${responseCode} - ${responseBody}`);
+    if (data.error) {
+      throw new Error(`Shopee APIエラー: ${data.error} - ${data.message}`);
+    }
+
+    // 新しいトークンを保存
+    setShopCredentials(shopCode, shopId, data.access_token, data.refresh_token);
+
+    Logger.log(`${shopCode}: アクセストークンをリフレッシュしました`);
+
+    return {
+      shopCode: shopCode,
+      access_token: data.access_token,
+      refresh_token: data.refresh_token,
+      expire_in: data.expire_in
+    };
+  } catch (error) {
+    Logger.log(`${shopCode}: リフレッシュエラー - ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * 全ショップのアクセストークンをリフレッシュ
+ *
+ * この関数は定期的に実行されるトリガーで呼び出されます。
+ */
+function refreshAccessToken() {
+  Logger.log('=== 全ショップのアクセストークンをリフレッシュ ===');
+
+  const activeShops = getActiveShops();
+
+  if (activeShops.length === 0) {
+    Logger.log('認証済みのショップがありません');
+    return;
   }
 
-  const data = JSON.parse(responseBody);
+  let successCount = 0;
+  let failCount = 0;
 
-  if (data.error) {
-    throw new Error(`Shopee APIエラー: ${data.error} - ${data.message}`);
+  for (const shopCode of activeShops) {
+    const result = refreshShopAccessToken(shopCode);
+    if (result) {
+      successCount++;
+    } else {
+      failCount++;
+    }
+
+    // APIレート制限対策
+    Utilities.sleep(1000);
   }
 
-  // 新しいトークンを保存
-  props.setProperty('SHOPEE_ACCESS_TOKEN', data.access_token);
-  props.setProperty('SHOPEE_REFRESH_TOKEN', data.refresh_token);
-  props.setProperty('TOKEN_EXPIRE_TIME', String(Date.now() + (data.expire_in * 1000)));
-
-  Logger.log('アクセストークンをリフレッシュしました');
-  Logger.log(`新しいAccess Token: ${data.access_token}`);
-  Logger.log(`新しいRefresh Token: ${data.refresh_token}`);
-
-  return {
-    access_token: data.access_token,
-    refresh_token: data.refresh_token,
-    expire_in: data.expire_in
-  };
+  Logger.log(`=== リフレッシュ完了: 成功 ${successCount}件, 失敗 ${failCount}件 ===`);
 }
 
 /**

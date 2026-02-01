@@ -7,9 +7,31 @@
 class SpreadsheetManager {
   /**
    * コンストラクタ
+   *
+   * @param {Object|string} shopConfigOrCode - ショップ設定オブジェクト、またはショップコード（SG, MY, PH）
+   *                                            省略時はSGを使用
    */
-  constructor() {
+  constructor(shopConfigOrCode = null) {
     this.config = getConfig();
+
+    // ショップ設定を決定
+    let shopConfig;
+    if (typeof shopConfigOrCode === 'string') {
+      // ショップコードが渡された場合
+      shopConfig = getShopConfig(shopConfigOrCode);
+    } else if (shopConfigOrCode && typeof shopConfigOrCode === 'object') {
+      // ショップ設定オブジェクトが渡された場合
+      shopConfig = shopConfigOrCode;
+    } else {
+      // デフォルトはSG
+      shopConfig = getShopConfig('SG');
+    }
+
+    this.shopCode = shopConfig.code;
+    this.shopName = shopConfig.name;
+    this.sheetName = shopConfig.sheetName;
+    this.timezone = shopConfig.timezone || 'Asia/Singapore';
+
     this.spreadsheet = this.getOrCreateSpreadsheet();
     this.sheet = this.getOrCreateSheet();
   }
@@ -47,12 +69,12 @@ class SpreadsheetManager {
    * @return {Sheet} シート
    */
   getOrCreateSheet() {
-    const sheetName = this.config.SPREADSHEET.SHEET_NAME;
+    const sheetName = this.sheetName;
     let sheet = this.spreadsheet.getSheetByName(sheetName);
 
     if (!sheet) {
       sheet = this.spreadsheet.insertSheet(sheetName);
-      Logger.log(`新しいシートを作成しました: ${sheetName}`);
+      Logger.log(`新しいシートを作成しました: ${sheetName} (${this.shopName})`);
 
       // ヘッダーを設定
       this.initializeSheet(sheet);
@@ -190,7 +212,7 @@ class SpreadsheetManager {
       const row = [
         orderDate,                      // 注文日
         orderStatus,                    // 注文ステータス
-        'Singapore',                    // 国
+        this.shopName,                  // 国
         order.order_sn,                 // 注文ID
         item.item_name || '',           // 商品タイトル
         variations[0] || '',            // バリエーション名①
@@ -268,7 +290,7 @@ class SpreadsheetManager {
     }
 
     const date = new Date(timestamp * 1000);
-    return Utilities.formatDate(date, this.config.OTHER.TIMEZONE, this.config.OTHER.DATE_FORMAT);
+    return Utilities.formatDate(date, this.timezone, this.config.OTHER.DATE_FORMAT);
   }
 
   /**

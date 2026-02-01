@@ -7,14 +7,37 @@
 class ShopeeAPI {
   /**
    * コンストラクタ
+   *
+   * @param {Object|string} shopConfigOrCode - ショップ設定オブジェクト、またはショップコード（SG, MY, PH）
+   *                                            省略時はSGを使用
    */
-  constructor() {
-    this.config = getConfig();
-    this.partnerId = this.config.SHOPEE.PARTNER_ID;
-    this.partnerKey = this.config.SHOPEE.PARTNER_KEY;
-    this.shopId = this.config.SHOPEE.SHOP_ID;
-    this.accessToken = this.config.SHOPEE.ACCESS_TOKEN;
-    this.baseUrl = this.config.SHOPEE.BASE_URL;
+  constructor(shopConfigOrCode = null) {
+    const baseConfig = getConfig();
+
+    // ショップ設定を決定
+    let shopConfig;
+    if (typeof shopConfigOrCode === 'string') {
+      // ショップコードが渡された場合
+      shopConfig = getShopConfig(shopConfigOrCode);
+    } else if (shopConfigOrCode && typeof shopConfigOrCode === 'object') {
+      // ショップ設定オブジェクトが渡された場合
+      shopConfig = shopConfigOrCode;
+    } else {
+      // デフォルトは最初の認証済みショップ、なければSG
+      const activeShops = getActiveShops();
+      const defaultCode = activeShops.length > 0 ? activeShops[0] : 'SG';
+      shopConfig = getShopConfig(defaultCode);
+    }
+
+    this.shopCode = shopConfig.code;
+    this.shopName = shopConfig.name;
+    this.partnerId = shopConfig.partnerId || baseConfig.SHOPEE.PARTNER_ID;
+    this.partnerKey = shopConfig.partnerKey || baseConfig.SHOPEE.PARTNER_KEY;
+    this.shopId = shopConfig.shopId;
+    this.accessToken = shopConfig.accessToken;
+    this.baseUrl = shopConfig.baseUrl || baseConfig.SHOPEE.BASE_URL;
+    this.endpoints = shopConfig.endpoints || baseConfig.SHOPEE.ENDPOINTS;
+    this.timezone = shopConfig.timezone || 'Asia/Singapore';
   }
 
   /**
@@ -120,7 +143,7 @@ class ShopeeAPI {
    * @return {Array} 注文リスト
    */
   getOrderList(timeFrom, timeTo, pageSize = 100) {
-    const endpoint = this.config.SHOPEE.ENDPOINTS.GET_ORDER_LIST;
+    const endpoint = this.endpoints.GET_ORDER_LIST;
 
     const params = {
       time_range_field: 'create_time',
@@ -154,7 +177,7 @@ class ShopeeAPI {
    * @return {Object} 注文詳細
    */
   getOrderDetail(orderSn) {
-    const endpoint = this.config.SHOPEE.ENDPOINTS.GET_ORDER_DETAIL;
+    const endpoint = this.endpoints.GET_ORDER_DETAIL;
 
     const params = {
       order_sn_list: orderSn,
@@ -184,7 +207,7 @@ class ShopeeAPI {
    * @return {Object} 配送情報
    */
   getShippingParameter(orderSn) {
-    const endpoint = this.config.SHOPEE.ENDPOINTS.GET_SHIPPING_PARAMETER;
+    const endpoint = this.endpoints.GET_SHIPPING_PARAMETER;
 
     const params = {
       order_sn: orderSn
@@ -205,7 +228,7 @@ class ShopeeAPI {
    * @return {Object} 支払い詳細
    */
   getEscrowDetail(orderSn) {
-    const endpoint = this.config.SHOPEE.ENDPOINTS.GET_ESCROW_DETAIL;
+    const endpoint = this.endpoints.GET_ESCROW_DETAIL;
 
     const params = {
       order_sn: orderSn
@@ -390,7 +413,7 @@ class ShopeeAPI {
    * @return {Object} 配送ドキュメントパラメータ
    */
   getShippingDocumentParameter(orderSn, packageNumber = null) {
-    const endpoint = this.config.SHOPEE.ENDPOINTS.GET_SHIPPING_DOCUMENT_PARAMETER;
+    const endpoint = this.endpoints.GET_SHIPPING_DOCUMENT_PARAMETER;
 
     const orderItem = { order_sn: orderSn };
     if (packageNumber) {
@@ -428,7 +451,7 @@ class ShopeeAPI {
    * @return {Object} 作成結果
    */
   createShippingDocument(orderSn, shippingDocumentType = 'THERMAL_AIR_WAYBILL', trackingNumber = null, packageNumber = null) {
-    const endpoint = this.config.SHOPEE.ENDPOINTS.CREATE_SHIPPING_DOCUMENT;
+    const endpoint = this.endpoints.CREATE_SHIPPING_DOCUMENT;
 
     const orderItem = {
       order_sn: orderSn,
@@ -473,7 +496,7 @@ class ShopeeAPI {
    * @return {Object} ステータス結果
    */
   getShippingDocumentResult(orderSn, shippingDocumentType = 'THERMAL_AIR_WAYBILL', packageNumber = null) {
-    const endpoint = this.config.SHOPEE.ENDPOINTS.GET_SHIPPING_DOCUMENT_RESULT;
+    const endpoint = this.endpoints.GET_SHIPPING_DOCUMENT_RESULT;
 
     const orderItem = {
       order_sn: orderSn,
@@ -513,7 +536,7 @@ class ShopeeAPI {
    * @return {Blob} PDFのBlob
    */
   downloadShippingDocument(orderSn, shippingDocumentType = 'THERMAL_AIR_WAYBILL', packageNumber = null) {
-    const endpoint = this.config.SHOPEE.ENDPOINTS.DOWNLOAD_SHIPPING_DOCUMENT;
+    const endpoint = this.endpoints.DOWNLOAD_SHIPPING_DOCUMENT;
 
     const orderItem = { order_sn: orderSn };
     if (packageNumber) {
@@ -557,7 +580,7 @@ class ShopeeAPI {
       }
 
       // v2.logistics.get_tracking_number API を呼び出し（GETリクエスト）
-      const endpoint = this.config.SHOPEE.ENDPOINTS.GET_TRACKING_NUMBER;
+      const endpoint = this.endpoints.GET_TRACKING_NUMBER;
 
       const params = {
         order_sn: orderSn
