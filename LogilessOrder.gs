@@ -32,20 +32,66 @@ function sendSelectedOrdersToLogiless() {
       return;
     }
 
-    // 選択行の注文IDを取得（D列 = 4列目）
-    const orderIds = [];
+    // 選択行の注文IDとSKU（H列 = 8列目）を取得
+    const orderItemsMap = {}; // { orderId: [{ sku, rowNumber }] }
+    const emptySkuRows = [];
+
     for (let i = 0; i < numRows; i++) {
       const row = startRow + i;
       if (row === 1) continue; // ヘッダー行スキップ
 
       const orderId = sheet.getRange(row, 4).getValue();
-      if (orderId && !orderIds.includes(orderId)) {
-        orderIds.push(orderId);
+      const sku = sheet.getRange(row, 8).getValue();
+
+      if (!orderId) continue;
+
+      // SKUが空の行を記録
+      if (!sku || String(sku).trim() === '') {
+        emptySkuRows.push(row);
       }
+
+      if (!orderItemsMap[orderId]) {
+        orderItemsMap[orderId] = [];
+      }
+      orderItemsMap[orderId].push({ sku: String(sku).trim(), rowNumber: row });
     }
+
+    const orderIds = Object.keys(orderItemsMap);
 
     if (orderIds.length === 0) {
       ui.alert('エラー', '有効な注文IDが見つかりません。', ui.ButtonSet.OK);
+      return;
+    }
+
+    // SKUが空の行がある場合は連携不可
+    if (emptySkuRows.length > 0) {
+      ui.alert(
+        'エラー',
+        `SKU（商品コード）が空の行があるため連携できません。\n\n該当行: ${emptySkuRows.join(', ')}`,
+        ui.ButtonSet.OK
+      );
+      return;
+    }
+
+    // ロジレス連携済みチェック（M列 = 13列目）
+    const alreadySentOrders = [];
+    for (const orderId of orderIds) {
+      const items = orderItemsMap[orderId];
+      for (const item of items) {
+        const isChecked = sheet.getRange(item.rowNumber, 13).getValue();
+        if (isChecked === true) {
+          alreadySentOrders.push(orderId);
+          break;
+        }
+      }
+    }
+
+    if (alreadySentOrders.length > 0) {
+      ui.alert(
+        'エラー',
+        `以下の注文は既にロジレス連携済みのため連携できません。\n\n${alreadySentOrders.join('\n')}`,
+        ui.ButtonSet.OK
+      );
       return;
     }
 
@@ -61,7 +107,7 @@ function sendSelectedOrdersToLogiless() {
     }
 
     // 連携処理を実行
-    const result = sendOrdersToLogiless(orderIds);
+    const result = sendOrdersToLogiless(orderIds, orderItemsMap);
 
     // 結果を表示
     let message = `連携完了\n\n成功: ${result.success.length}件`;
@@ -87,9 +133,10 @@ function sendSelectedOrdersToLogiless() {
  * 注文をロジレスへ連携
  *
  * @param {Array} orderIds - 注文IDの配列
+ * @param {Object} orderItemsMap - 注文IDごとのスプレッドシート商品情報 { orderId: [{ sku, rowNumber }] }
  * @return {Object} { success: [{orderId, logilessId}], failed: [{orderId, error}] }
  */
-function sendOrdersToLogiless(orderIds) {
+function sendOrdersToLogiless(orderIds, orderItemsMap) {
   const result = {
     success: [],
     failed: []
@@ -112,8 +159,9 @@ function sendOrdersToLogiless(orderIds) {
       // Shopee APIから注文詳細を取得
       const orderDetail = shopeeApi.getOrderDetail(orderId);
 
-      // ロジレス用の受注データに変換
-      const salesOrderData = convertToLogilessSalesOrder(orderDetail, shopCode);
+      // ロジレス用の受注データに変換（スプレッドシートのSKU情報を渡す）
+      const sheetItems = orderItemsMap[orderId] || [];
+      const salesOrderData = convertToLogilessSalesOrder(orderDetail, shopCode, sheetItems);
 
       // ロジレスに受注登録
       const response = logilessApi.createSalesOrder(salesOrderData);
@@ -131,9 +179,16 @@ function sendOrdersToLogiless(orderIds) {
 
     } catch (error) {
       Logger.log(`注文連携失敗: ${orderId} - ${error.message}`);
+
+      // エラーメッセージをわかりやすく変換
+      let userFriendlyError = error.message;
+      if (error.message.includes('Validation Failed') && error.message.includes('"code"')) {
+        userFriendlyError = 'この注文は既にロジレスに登録済みです。チェックボックスにチェックを入れてください。';
+      }
+
       result.failed.push({
         orderId: orderId,
-        error: error.message
+        error: userFriendlyError
       });
     }
   }
@@ -160,9 +215,10 @@ function getShopCodeFromSheetName(sheetName) {
  *
  * @param {Object} orderDetail - Shopeeの注文詳細
  * @param {string} shopCode - ショップコード
+ * @param {Array} sheetItems - スプレッドシートの商品情報 [{ sku, rowNumber }]
  * @return {Object} ロジレス受注伝票データ
  */
-function convertToLogilessSalesOrder(orderDetail, shopCode) {
+function convertToLogilessSalesOrder(orderDetail, shopCode, sheetItems) {
   const config = getConfig();
   const logilessConfig = config.LOGILESS;
 
@@ -184,12 +240,15 @@ function convertToLogilessSalesOrder(orderDetail, shopCode) {
   // 配送方法の変換
   const deliveryMethod = convertDeliveryMethod(orderDetail.shipping_carrier);
 
-  // 明細行の作成
+  // 明細行の作成（スプレッドシートのSKUを使用）
   const lines = [];
   if (orderDetail.item_list && orderDetail.item_list.length > 0) {
-    for (const item of orderDetail.item_list) {
+    for (let i = 0; i < orderDetail.item_list.length; i++) {
+      const item = orderDetail.item_list[i];
+      const sheetItem = sheetItems[i];
+
       lines.push({
-        article_code: item.model_sku || item.item_sku || `SHOPEE-${item.item_id}`,
+        article_code: sheetItem ? sheetItem.sku : item.model_sku || item.item_sku || `SHOPEE-${item.item_id}`,
         article_name: item.item_name || 'Unknown Item',
         price: item.model_discounted_price || item.model_original_price || 0,
         quantity: item.model_quantity_purchased || 1,
@@ -345,7 +404,7 @@ function formatDateForLogiless(timestamp) {
 }
 
 /**
- * 連携済み注文をスプレッドシートにマーク
+ * 連携済み注文をスプレッドシートにマーク（M列チェックボックス）
  *
  * @param {Sheet} sheet - スプレッドシート
  * @param {Array} successOrders - 成功した注文の配列
@@ -362,25 +421,20 @@ function markOrdersAsSentToLogiless(sheet, successOrders) {
   // 成功した注文IDのセット
   const successOrderIds = new Set(successOrders.map(o => o.orderId));
 
-  // L列（備考欄）にロジレス連携済みマークを追加
+  // M列（13列目）にチェックボックスを挿入してチェックを入れる
   for (let i = 0; i < orderIdColumn.length; i++) {
     const orderId = orderIdColumn[i][0];
     if (successOrderIds.has(orderId)) {
       const row = i + 2;
-      const currentNote = sheet.getRange(row, 12).getValue() || '';
-      const successOrder = successOrders.find(o => o.orderId === orderId);
+      const cell = sheet.getRange(row, 13);
 
-      // 既にマークされていなければ追加
-      if (!currentNote.includes('[ロジレス連携済]')) {
-        const newNote = currentNote ?
-          `${currentNote} [ロジレス連携済: ${successOrder.logilessCode}]` :
-          `[ロジレス連携済: ${successOrder.logilessCode}]`;
-        sheet.getRange(row, 12).setValue(newNote);
-      }
+      // チェックボックスを挿入してチェックを入れる
+      cell.insertCheckboxes();
+      cell.setValue(true);
     }
   }
 
-  Logger.log(`${successOrders.length}件の注文をマークしました`);
+  Logger.log(`${successOrders.length}件の注文をチェックしました`);
 }
 
 /**
