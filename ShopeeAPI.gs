@@ -706,3 +706,69 @@ function testGetShippingLabel() {
     Logger.log(`エラー: ${error.message}`);
   }
 }
+
+/**
+ * デバッグ用：注文詳細のSKU情報を確認
+ *
+ * @param {string} orderSn - 注文番号（省略時は最新の注文を使用）
+ * @param {string} shopCode - ショップコード（省略時は最初の認証済みショップ）
+ */
+function debugCheckSKU(orderSn = null, shopCode = null) {
+  Logger.log('=== SKU情報デバッグ ===');
+
+  // ショップコードが指定されていない場合は最初の認証済みショップを使用
+  if (!shopCode) {
+    const activeShops = getActiveShops();
+    if (activeShops.length === 0) {
+      Logger.log('認証済みのショップがありません');
+      return;
+    }
+    shopCode = activeShops[0];
+  }
+
+  const api = new ShopeeAPI(shopCode);
+
+  // 注文番号が指定されていない場合は最新の注文を取得
+  if (!orderSn) {
+    Logger.log('最新の注文を取得中...');
+    const orders = api.getLatestOrders(1, 15);
+    if (orders.length === 0) {
+      Logger.log('注文が見つかりませんでした');
+      return;
+    }
+    orderSn = orders[0].order_sn;
+    Logger.log(`最新の注文番号: ${orderSn}`);
+  }
+
+  // 注文詳細を取得
+  const orderDetail = api.getOrderDetail(orderSn);
+
+  Logger.log(`\n注文番号: ${orderDetail.order_sn}`);
+  Logger.log(`注文ステータス: ${orderDetail.order_status}`);
+
+  if (orderDetail.item_list && orderDetail.item_list.length > 0) {
+    Logger.log(`\n商品数: ${orderDetail.item_list.length}件`);
+    Logger.log('--- 商品情報 ---');
+
+    orderDetail.item_list.forEach((item, index) => {
+      Logger.log(`\n[商品 ${index + 1}]`);
+      Logger.log(`  item_id: ${item.item_id}`);
+      Logger.log(`  item_name: ${item.item_name}`);
+      Logger.log(`  item_sku: "${item.item_sku || '(空)'}"`);
+      Logger.log(`  model_id: ${item.model_id}`);
+      Logger.log(`  model_name: ${item.model_name || '(なし)'}`);
+      Logger.log(`  model_sku: "${item.model_sku || '(空)'}"`);
+      Logger.log(`  model_quantity_purchased: ${item.model_quantity_purchased}`);
+      Logger.log(`  model_original_price: ${item.model_original_price}`);
+      Logger.log(`  model_discounted_price: ${item.model_discounted_price}`);
+    });
+  } else {
+    Logger.log('商品情報が見つかりませんでした');
+  }
+
+  // 生のitem_listをJSONで出力
+  Logger.log('\n--- item_list 生データ ---');
+  Logger.log(JSON.stringify(orderDetail.item_list, null, 2));
+
+  Logger.log('\n=== デバッグ完了 ===');
+}

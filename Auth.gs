@@ -97,7 +97,13 @@ function generateAllAuthUrls(redirectUrl) {
 function doGet(e) {
   const params = e.parameter;
 
-  // 認証コールバック
+  // ロジレス認証のコールバックを先にチェック
+  const logilessResponse = handleLogilessCallback(params);
+  if (logilessResponse) {
+    return logilessResponse;
+  }
+
+  // Shopee認証コールバック
   if (params.code && params.shop_id) {
     try {
       // ショップコードを取得（デフォルトはSG）

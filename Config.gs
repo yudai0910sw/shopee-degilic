@@ -93,6 +93,28 @@ const CONFIG = {
     ]
   },
 
+  // ロジレス API設定
+  LOGILESS: {
+    // 認証情報はスクリプトプロパティで設定してください
+    CLIENT_ID: '',      // スクリプトプロパティ LOGILESS_CLIENT_ID で設定
+    CLIENT_SECRET: '',  // スクリプトプロパティ LOGILESS_CLIENT_SECRET で設定
+    REDIRECT_URI: '',   // スクリプトプロパティ LOGILESS_REDIRECT_URI で設定
+    MERCHANT_ID: '',    // スクリプトプロパティ LOGILESS_MERCHANT_ID で設定
+
+    // APIエンドポイント（固定）
+    BASE_URL: 'https://app2.logiless.com/api',
+    AUTH_URL: 'https://app2.logiless.com/oauth/v2/auth',
+    TOKEN_URL: 'https://app2.logiless.com/oauth2/token',
+
+    // APIエンドポイント
+    ENDPOINTS: {
+      SALES_ORDERS: '/v1/merchant/{merchant_id}/sales_orders',
+      ITEMS: '/v1/merchant/{merchant_id}/items',
+      STORES: '/v1/merchant/{merchant_id}/stores',
+      WAREHOUSES: '/v1/merchant/{merchant_id}/warehouses'
+    }
+  },
+
   // その他の設定
   OTHER: {
     DEFAULT_TIMEZONE: 'Asia/Singapore',
@@ -128,6 +150,19 @@ function getConfig() {
       ID: props.getProperty('SPREADSHEET_ID') || CONFIG.SPREADSHEET.ID,
       SHEET_NAME: CONFIG.SPREADSHEET.SHEET_NAME,
       HEADERS: CONFIG.SPREADSHEET.HEADERS
+    },
+    LOGILESS: {
+      CLIENT_ID: props.getProperty('LOGILESS_CLIENT_ID') || CONFIG.LOGILESS.CLIENT_ID,
+      CLIENT_SECRET: props.getProperty('LOGILESS_CLIENT_SECRET') || CONFIG.LOGILESS.CLIENT_SECRET,
+      REDIRECT_URI: props.getProperty('LOGILESS_REDIRECT_URI') || CONFIG.LOGILESS.REDIRECT_URI,
+      MERCHANT_ID: props.getProperty('LOGILESS_MERCHANT_ID') || CONFIG.LOGILESS.MERCHANT_ID,
+      ACCESS_TOKEN: props.getProperty('LOGILESS_ACCESS_TOKEN') || '',
+      REFRESH_TOKEN: props.getProperty('LOGILESS_REFRESH_TOKEN') || '',
+      TOKEN_EXPIRE: props.getProperty('LOGILESS_TOKEN_EXPIRE') || '',
+      BASE_URL: CONFIG.LOGILESS.BASE_URL,
+      AUTH_URL: CONFIG.LOGILESS.AUTH_URL,
+      TOKEN_URL: CONFIG.LOGILESS.TOKEN_URL,
+      ENDPOINTS: CONFIG.LOGILESS.ENDPOINTS
     },
     OTHER: CONFIG.OTHER
   };
@@ -241,6 +276,89 @@ function setShopCredentials(shopCode, shopId, accessToken, refreshToken) {
   props.setProperty(`SHOP_${shopCode}_TOKEN_EXPIRE`, String(Date.now() + (4 * 60 * 60 * 1000)));
 
   Logger.log(`${shopCode}ショップの認証情報を保存しました`);
+}
+
+/**
+ * ロジレス設定を保存
+ *
+ * @param {string} clientId - Client ID
+ * @param {string} clientSecret - Client Secret
+ * @param {string} redirectUri - リダイレクトURI
+ * @param {string} merchantId - マーチャントID（任意）
+ */
+function setLogilessConfig(clientId, clientSecret, redirectUri, merchantId) {
+  const props = PropertiesService.getScriptProperties();
+
+  if (clientId) props.setProperty('LOGILESS_CLIENT_ID', clientId);
+  if (clientSecret) props.setProperty('LOGILESS_CLIENT_SECRET', clientSecret);
+  if (redirectUri) props.setProperty('LOGILESS_REDIRECT_URI', redirectUri);
+  if (merchantId) props.setProperty('LOGILESS_MERCHANT_ID', merchantId);
+
+  Logger.log('ロジレス設定を保存しました');
+}
+
+/**
+ * ロジレストークンを保存
+ *
+ * @param {string} accessToken - アクセストークン
+ * @param {string} refreshToken - リフレッシュトークン
+ * @param {number} expiresIn - 有効期限（秒）
+ */
+function setLogilessTokens(accessToken, refreshToken, expiresIn) {
+  const props = PropertiesService.getScriptProperties();
+
+  props.setProperty('LOGILESS_ACCESS_TOKEN', accessToken);
+  props.setProperty('LOGILESS_REFRESH_TOKEN', refreshToken);
+
+  // 有効期限を計算して保存
+  const expireTime = Date.now() + (expiresIn * 1000);
+  props.setProperty('LOGILESS_TOKEN_EXPIRE', String(expireTime));
+
+  Logger.log('ロジレストークンを保存しました');
+}
+
+/**
+ * ロジレス設定状態を確認
+ */
+function checkLogilessConfig() {
+  Logger.log('=== ロジレス設定状態 ===');
+
+  const config = getConfig();
+  const logiless = config.LOGILESS;
+  const props = PropertiesService.getScriptProperties();
+
+  Logger.log(`Client ID: ${logiless.CLIENT_ID ? '✅ 設定済み' : '❌ 未設定'}`);
+  Logger.log(`Client Secret: ${logiless.CLIENT_SECRET ? '✅ 設定済み' : '❌ 未設定'}`);
+  Logger.log(`Redirect URI: ${logiless.REDIRECT_URI || '❌ 未設定'}`);
+  Logger.log(`Merchant ID: ${logiless.MERCHANT_ID || '❌ 未設定'}`);
+  Logger.log('');
+  Logger.log(`Access Token: ${logiless.ACCESS_TOKEN ? '✅ 設定済み' : '❌ 未設定'}`);
+  Logger.log(`Refresh Token: ${logiless.REFRESH_TOKEN ? '✅ 設定済み' : '❌ 未設定'}`);
+
+  if (logiless.TOKEN_EXPIRE) {
+    const expireDate = new Date(parseInt(logiless.TOKEN_EXPIRE));
+    const now = new Date();
+    const remainingDays = Math.floor((expireDate - now) / (1000 * 60 * 60 * 24));
+
+    if (now > expireDate) {
+      Logger.log('❌ 有効期限切れ - 再認証が必要です');
+    } else {
+      Logger.log(`有効期限: ${expireDate.toLocaleString('ja-JP')}（残り${remainingDays}日）`);
+    }
+  } else {
+    Logger.log('有効期限: 不明');
+  }
+
+  // 店舗ID設定状態
+  Logger.log('');
+  Logger.log('【店舗ID設定】');
+  const defaultStoreId = props.getProperty('LOGILESS_STORE_ID');
+  Logger.log(`デフォルト店舗ID: ${defaultStoreId || '❌ 未設定'}`);
+
+  for (const shop of CONFIG.SHOPS) {
+    const storeId = props.getProperty(`LOGILESS_STORE_ID_${shop.code}`);
+    Logger.log(`${shop.code}用店舗ID: ${storeId || '（デフォルト使用）'}`);
+  }
 }
 
 /**

@@ -217,7 +217,7 @@ class SpreadsheetManager {
         item.item_name || '',           // 商品タイトル
         variations[0] || '',            // バリエーション名①
         variations[1] || '',            // バリエーション名②
-        item.model_sku || '',           // SKU
+        item.model_sku || item.item_sku || '',  // SKU（バリエーションありならmodel_sku、なしならitem_sku）
         item.model_quantity_purchased || 0, // 注文個数
         '',                             // 配送ラベルデータ
         isShipped ? '済' : '未',        // 発送済
